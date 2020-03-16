@@ -1,0 +1,94 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'timeout'
+require 'stringio'
+
+PATH ||= __dir__
+THREADS ||= 2  # Plus one main thread
+TIMEOUT ||= 9  # A loop
+
+$passed = 0
+$failed = 0
+
+$p_mutex = Mutex.new
+$f_mutex = Mutex.new
+
+def suppress_stderr
+  original_stderr = $stderr.clone
+  $stderr.reopen(File.new('/dev/null', 'w'))
+  yield
+ensure
+  $stderr.reopen(original_stderr)
+end
+
+def suppress_stdout
+  original_stdout = $stdout.clone
+  $stdout.reopen(File.new('/dev/null', 'w'))
+  yield
+ensure
+  $stdout.reopen(original_stdout)
+end 
+
+class Code
+  CHARS ||= ((?!..?~).to_a << ' ').freeze
+  N = 255
+
+  @@id = Time.now.to_i
+  @@id_mutex = Mutex.new
+
+
+  def initialize(n = N)
+    chars = StringIO.new
+    n.times { chars << CHARS[rand(0...CHARS.size)] }
+    @code = chars.string
+  end
+
+  def to_file
+    @@id_mutex.synchronize {
+      File.open("#{PATH}/#{@@id += 1}.rb", 'w') do |file|
+        file << @code
+      end
+    }
+  end
+
+  def to_s
+    @code
+  end
+end
+
+def main
+  loop do
+    begin
+      length = rand(1..65536)
+      code = Code.new(length)
+  
+      Timeout::timeout(TIMEOUT) {
+        suppress_stderr { eval("#{code}") }
+      }
+    rescue Interrupt
+      break
+    rescue Timeout
+      code.to_file
+      $p_mutex.synchronize {
+        $passed += 1
+      }
+    rescue Exception
+      $f_mutex.synchronize {
+        $failed += 1
+      }
+    else
+      $f_mutex.synchronize {
+        $failed += 1
+      }
+    end
+  end
+end
+
+THREADS.times {
+  Thread.new { main }
+}
+
+main
+
+puts "\npassed: #{$passed}\nfailed: #{$failed}"
